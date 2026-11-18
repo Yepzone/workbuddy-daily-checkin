@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>代码编辑器</title>
+<link rel="stylesheet" href="/monaco/vs/editor/editor.main.css">
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f7f8fa;
+    --border: #e3e6eb;
+    --text: #1f2329;
+    --muted: #8a9099;
+    --accent: #2f6bff;
+    --ok: #1a7f45;
+    --err: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex: none;
+  }
+  .title { display: flex; flex-direction: column; min-width: 0; }
+  .name { font-weight: 600; font-size: 13px; }
+  .path { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 44vw; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 11px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { border-color: #c3c9d3; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.06); }
+  button:disabled { opacity: .45; cursor: default; }
+  .pill {
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill.dirty { color: #9a6400; border-color: #f0d9a8; background: #fff8e8; }
+  .pill.saved { color: var(--ok); border-color: #bfe3cd; background: #eefaf2; }
+  main { flex: 1; min-height: 0; position: relative; }
+  #container { position: absolute; inset: 0; }
+  footer {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 11.5px;
+    color: var(--muted);
+    min-height: 30px;
+  }
+  #msg { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #msg.err { color: var(--err); }
+  #msg.ok { color: var(--ok); }
+  #banner {
+    display: none;
+    padding: 7px 12px;
+    background: #fdf0ee;
+    border-bottom: 1px solid #f3cdc7;
+    color: var(--err);
+    font-size: 12px;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow: auto;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <span class="name" id="fname">加载中…</span>
+    <span class="path" id="fpath"></span>
+  </div>
+  <span class="spacer"></span>
+  <span class="pill" id="state">—</span>
+  <button id="save" class="primary" title="保存到磁盘（Ctrl+S）">保存</button>
+  <button id="reload" title="丢弃未保存的修改，重新从磁盘读取">重新加载</button>
+  <button id="restore" title="把上一次保存前的版本还原回来">回滚上一版</button>
+</header>
+<div id="banner"></div>
+<main><div id="container"></div></main>
+<footer>
+  <span id="msg">正在加载编辑器…</span>
+  <span id="lines">—</span>
+  <span id="pos">—</span>
+</footer>
+
+<script src="/monaco/vs/loader.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const bannerEl = $("banner");
+const MONACO_BASE = "/monaco/vs";
+
+let editor = null;
+let savedText = "";
+let saving = false;
+let suppressDirty = false;
+
+function setMsg(text, kind) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = kind || "";
+}
+
+function setState(kind, text) {
+  const el = $("state");
+  el.textContent = text;
+  el.className = "pill " + (kind || "");
+}
+
+function isDirty() { return editor && editor.getValue() !== savedText; }
+
+function refreshDirty() {
+  if (!editor) return;
+  if (isDirty()) setState("dirty", "未保存");
+  else setState("saved", "已保存");
+  $("save").disabled = !isDirty() || saving;
+}
+
+function refreshCounts() {
+  if (!editor) return;
+  $("lines").textContent = editor.getModel().getLineCount() + " 行";
+}
+
+function renderPos() {
+  if (!editor) return;
+  const p = editor.getPosition();
+  if (!p) return;
+  $("pos").textContent = "行 " + p.lineNumber + "，列 " + p.column;
+}
+
+function showBanner(text) {
+  if (!text) { bannerEl.style.display = "none"; bannerEl.textContent = ""; return; }
+  bannerEl.textContent = text;
+  bannerEl.style.display = "block";
+}
+
+function setValue(text) {
+  suppressDirty = true;
+  editor.setValue(text);
+  suppressDirty = false;
+  savedText = text;
+  refreshDirty();
+  refreshCounts();
+  renderPos();
+}
+
+async function loadFile() {
+  const r = await fetch("/api/file");
+  const d = await r.json();
+  setValue(d.content);
+  $("fname").textContent = d.name;
+  $("fpath").textContent = d.path;
+  showBanner("");
+  setMsg("已从磁盘加载 · " + new Date(d.mtime).toLocaleString("zh-CN", { hour12: false }), "ok");
+}
+
+async function save() {
+  if (saving || !editor) return;
+  saving = true;
+  refreshDirty();
+  setMsg("保存中…");
+  try {
+    const r = await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: editor.getValue() }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      setMsg(d.error || "保存失败", "err");
+      return;
+    }
+    savedText = editor.getValue();
+    refreshDirty();
+    if (d.check && d.check.ok) {
+      showBanner("");
+      setMsg((d.unchanged ? "内容无变化 · " : "已保存 · ") + "语法检查通过", "ok");
+    } else {
+      const out = (d.check && d.check.output) || "语法检查失败";
+      showBanner(out.split("\n").slice(0, 6).join("\n"));
+      setMsg("已保存，但语法检查未通过", "err");
+    }
+  } catch (e) {
+    setMsg("保存失败：" + e.message, "err");
+  } finally {
+    saving = false;
+    refreshDirty();
+  }
+}
+
+async function restore() {
+  if (!confirm("用上一次保存前的版本覆盖当前文件？当前内容会丢失。")) return;
+  const r = await fetch("/api/restore", { method: "POST" });
+  const d = await r.json();
+  if (!d.ok) { setMsg(d.error || "回滚失败", "err"); return; }
+  await loadFile();
+  setMsg("已回滚到上一版", "ok");
+}
+
+$("save").addEventListener("click", save);
+$("reload").addEventListener("click", () => {
+  if (isDirty() && !confirm("有未保存的修改，确定丢弃并重新加载？")) return;
+  loadFile();
+});
+$("restore").addEventListener("click", restore);
+
+window.addEventListener("beforeunload", (e) => {
+  if (isDirty()) { e.preventDefault(); e.returnValue = ""; }
+});
+
+// Monaco（VS Code 的编辑器内核）
+// 注：0.57 的 editor.main 载入后会自行设置 self.MonacoEnvironment 的 getWorker（blob worker），
+// 这里不需要再指定 worker 路径，只要保证 vs 路径指到本地托管的 min/vs 即可。
+require.config({ paths: { vs: MONACO_BASE } });
+require(["vs/editor/editor.main"], function () {
+  editor = monaco.editor.create($("container"), {
+    value: "",
+    language: "javascript",
+    theme: "vs",
+    automaticLayout: true,
+    fontSize: 13,
+    lineHeight: 20,
+    tabSize: 2,
+    minimap: { enabled: true, renderCharacters: false, maxColumn: 80 },
+    scrollBeyondLastLine: false,
+    renderWhitespace: "selection",
+    fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace',
+    padding: { top: 10, bottom: 10 },
+    wordWrap: "off",
+  });
+
+  editor.onDidChangeModelContent(() => {
+    if (suppressDirty) return;
+    refreshDirty();
+    refreshCounts();
+  });
+  editor.onDidChangeCursorPosition(renderPos);
+
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, save);
+
+  loadFile().catch((e) => setMsg("加载失败：" + e.message, "err"));
+});
+</script>
+</body>
+</html>

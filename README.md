@@ -61,6 +61,17 @@ node workbuddy-checkin.js
 
 脚本是幂等的：当天已签到会直接跳过，重复运行不会重复领取（接口本身也幂等，已签到返回 code 10001）。
 
+### 浏览器里改脚本（可选）
+
+`tools/` 下有一个本地编辑页面，用 Monaco（VS Code 的编辑器内核）打开 `workbuddy-checkin.js`，改完直接保存回磁盘：
+
+```bat
+cd tools\vendor && npm install     :: 首次需要，装 Monaco
+cd ..\.. && node tools\editor-server.js
+```
+
+浏览器打开 `http://127.0.0.1:8787/`（或双击 `tools\edit.cmd`）。页面只监听回环地址、只认启动时指定的那一个文件；保存前会留一份 `.bak`，并在保存后跑一遍 `node --check`。
+
 ### 命令行选项
 
 | 选项 | 作用 |

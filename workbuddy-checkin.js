@@ -505,11 +505,46 @@ function earliestLogTimeToday() {
   return earliest;
 }
 
+/** 某日主线程日志里出现过的所有 pid */
+function logPidsFor(date) {
+  const dir = todayLogDir(date);
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => /^workbuddyMainThread.*\.log$/i.test(f));
+  } catch {
+    return [];
+  }
+  const pids = new Set();
+  for (const f of files) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(dir, f), "utf8");
+    } catch {
+      continue;
+    }
+    const re = /\[pid=(\d+)\]/g;
+    let m;
+    while ((m = re.exec(text))) pids.add(m[1]);
+  }
+  return [...pids];
+}
+
 /**
- * 客户端整天挂机不重启时不会跨天签到。此判断用于识别这种“陈旧进程”：
- * 当天没有任何签到记录，且日志显示进程当天零点前后就在跑。
+ * 客户端整天挂机不重启时不会跨天签到。此判断用于识别这种“陈旧进程”。
+ *
+ * 用 pid 判断，而不是“当天最早一条日志的时间”：进程挂着但零点后长时间不写日志时，
+ * 最早日志会晚于 01:00，于是把跨天挂着的进程误判成刚启动（2026-11-17 就因此漏签）。
+ * 今天日志里出现、昨天的日志里也出现过的 pid，说明这个进程从昨天起一直在跑。
  */
 function clientLooksStale() {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const todayPids = logPidsFor();
+  const yPids = new Set(logPidsFor(yesterday));
+  if (todayPids.length && yPids.size) {
+    return todayPids.some((p) => yPids.has(p));
+  }
+  // 缺少任一天的日志（首次安装、日志已清理）时退回旧启发式
   const t = earliestLogTimeToday();
   return !!t && t < "01:00:00";
 }
@@ -576,17 +611,16 @@ async function runClientMode() {
     log(`已启动客户端：${exe}`);
   }
 
-  // 陈旧进程（跨天挂着没重启）不会自己再签，等日志没有意义：直接重启客户端触发启动签到
-  if (wasRunning && opts.restartIfIdle && !alreadyRestartedToday() && clientLooksStale()) {
-    if (opts.statusOnly) {
-      return finish(0, "pending", "今日尚未签到，且客户端已跨天挂着未重启，建议重启客户端。", { code: 0 });
-    }
+  // 到点仍未签到：客户端自身补签的时间不固定，完全不操作它时可能一次都不触发，
+  // 因此只要满足“今天还没签”就重启一次客户端（每天最多一次），用启动初始化强制签到。
+  if (wasRunning && opts.restartIfIdle && !alreadyRestartedToday()) {
     scheduleClientRestart(exe, opts.restartDelay);
     markRestartedToday();
+    const why = clientLooksStale() ? "，且客户端已跨天挂着未重启" : "，客户端在运行但没有触发签到";
     return finish(
       0,
       "restart_scheduled",
-      `今日未见签到记录，且客户端已跨天挂着未重启。将在 ${opts.restartDelay} 秒后重启客户端，重启后客户端会自动完成签到。`,
+      `今日未见签到记录${why}。将在 ${opts.restartDelay} 秒后重启客户端，重启后客户端会自动完成签到。`,
       { code: 0 }
     );
   }

@@ -1,3 +1,6 @@
 checkin.log
 *.log
 node_modules/
+*.bak
+*.tmp-*
+.restart-state.json

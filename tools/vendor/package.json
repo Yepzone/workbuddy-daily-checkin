@@ -1,0 +1,8 @@
+{
+  "name": "workbuddy-checkin-editor-vendor",
+  "private": true,
+  "description": "本地编辑页面依赖：Monaco 是 VS Code 的编辑器内核，页面通过 tools/editor-server.js 以静态资源方式托管",
+  "dependencies": {
+    "monaco-editor": "0.57.0"
+  }
+}
